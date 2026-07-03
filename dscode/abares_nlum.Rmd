@@ -37,8 +37,8 @@ library(sf)
 - TIF provides the native-resolution (250 m) categorical land-use raster for Australia
 ```{r data}
 data("ozmap_states")                                  # load Australian boundaries
-abares_csv <- read.csv("../data/NLUM_v7_250_INPUTS_2020_21_geo.csv") # read in csv
-abares_tif <- rast("../data/NLUM_v7_250_INPUTS_2020_21_geo.tif")     # read in tif 
+abares_csv <- read.csv("../dsdata/NLUM_v7_250_INPUTS_2020_21_geo.csv") # read in csv
+abares_tif <- rast("../dsdata/NLUM_v7_250_INPUTS_2020_21_geo.tif")     # read in tif 
 ```
 
 ### Define and apply Australian Albers Equal Area projection
@@ -67,7 +67,7 @@ abares_csv_merged <- abares_csv %>%
     TERTV8 == "4.4.8 Irrigated citrus" ~ "3.4.8 Citrus",
     TERTV8 == "4.4.9 Irrigated grapes" ~ "3.4.9 Grapes",
     TERTV8 == "4.4.5 Irrigated shrub berries and fruits" ~ "3.4.5 Shrub berries and fruits",
-    TERTV8 == "4.4.0 Irrigated perennial horticulture" ~ "3.4.0 Perennial horticulture"
+    TERTV8 == "4.4.0 Irrigated perennial horticulture" ~ "3.4.0 Perennial horticulture",
     TRUE ~ TERTV8 ))
 
 levels(abares_tif) <- abares_csv_merged
@@ -145,7 +145,7 @@ category_labels <- c(
 
 ### Create map
 ```{r map}
-png("D.suzukii_hosts_aus.png", units="in", width=8, height=4, res=700)
+png("../dsoutputs/D.suzukii_hosts_aus.png", units="in", width=8, height=4, res=700)
 par(oma=c(0, 0, 0, 1))
 par(mar=c(0, 0, 0, 1))
 
@@ -159,10 +159,12 @@ legend("right", inset = c(-0.05, 0),
        fill = base_cols[categories_to_keep],
        bty = "n", cex = 0.9)
 invisible(dev.off())
+
+knitr::include_graphics("../dsoutputs/D.suzukii_hosts_aus.png")
 ```
 
 ### Export raster of all land use types
 - No separation of host commodities within the raster
 ```{r raster}
-writeRaster(abares_modal, filename = "abares_modal_hosts.tif", filetype = "GTiff", overwrite = TRUE)
+writeRaster(abares_modal, filename = "../dsdata/abares_modal_hosts.tif", filetype = "GTiff", overwrite = TRUE)
 ```

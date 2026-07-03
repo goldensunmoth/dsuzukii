@@ -39,15 +39,15 @@ library(terra)             # GIS manipulation
 library(ozmaps)            # Australian boundaries
 library(sf)                # GIS manipulation
 
-irrigated <- read.csv("D_suzukii_world_10_EI_GI_gens_irrigated.csv", skip = 2)
-natural <- read.csv("D_suzukii_world_10_EI_GI_gens_none.csv", skip =2)
+irrigated <- read.csv("../dsdata/D_suzukii_world_10_EI_GI_gens_irrigated.csv", skip = 2)
+natural <- read.csv("../dsdata/D_suzukii_world_10_EI_GI_gens_none.csv", skip =2)
 
 world_boundary <- ne_countries(scale = "medium", returnclass = "sf") # import global country boundaries
 world_boundary <- vect(world_boundary)                               # convert to terra format
 data("ozmap_states")                                                 # Australia State and Territory boundaries
 
-records <- vect("d.suzukii.shp")                                     # read in GBIF records
-hosts <- rast("abares_modal_hosts.tif")                              # host data
+records <- vect("../dsdata/d.suzukii.shp")                                     # read in GBIF records
+hosts <- rast("../dsdata/abares_modal_hosts.tif")                              # host data
 ```
 
 ### Rasterise irrigated and non-irrigated outputs
@@ -77,7 +77,7 @@ generations <- rasterize(irrigated_points, r_global, field="Generations") # rast
 - Clean zeros to NA in all rasters
 
 ```{r girreo}
-girreo <- rast("Assimila_IrrigatedAreas_candidate_EVI_idx_Global_2023_irrigation_mask_0.1666667Deg.tif")
+girreo <- rast("../dsdata/Assimila_IrrigatedAreas_candidate_EVI_idx_Global_2023_irrigation_mask_0.1666667Deg.tif")
 girreo <- resample(girreo, r_global,  method="near")
 irr_ei_clipped <- mask(irr_ei, girreo, maskvalues=0)
 irr_gi_clipped <- mask(irr_gi, girreo, maskvalues=0)
@@ -164,7 +164,7 @@ The high record density in Eurasia and North America reduces visual detail when 
 - Turn off EI, GI, Generations and records as needed using \#
 
 ```{r globalmaps}
-png("D.suzukii_global.png", units="in", width=4, height=5, res=500)
+png("../dsoutputs/D.suzukii_global.png", units="in", width=4, height=5, res=500)
 layout(matrix(c(1, 2, 3), nrow = 3, byrow = TRUE), heights = c(0.43, 0.43, 0.14)) 
 
 par(mar = c(0, 1, 1, 1)) # plot 1
@@ -203,12 +203,11 @@ legend("right", inset = c(0.1, 0),
        bty = "n", cex = 0.6, horiz = FALSE)
 invisible(dev.off())
 
-knitr::include_graphics("D.suzukii_global.png")
+knitr::include_graphics("../dsoutputs/D.suzukii_global.png")
 ```
 
 ### Set Australian Albers reprojection
 
-- Define Australian Albers Equal Area projection
 - Reproject composite rasters to Australian Albers, and natural rasters to visually demonstrate the effects of irrigation
 - Reproject Australia boundary to Australian Albers
 - Clip EI and GI rasters to Aus boundary file.
@@ -216,21 +215,19 @@ knitr::include_graphics("D.suzukii_global.png")
 - Mask to Australian boundary to ensure a clean outline
 
 ```{r ausalbers, message = FALSE, warning = FALSE}
-aus_albers <- "+proj=aea +lat_0=0 +lon_0=132 +lat_1=-18 +lat_2=-36 +x_0=0 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"
+comp_ei_albers <- project(comp_ei, "EPSG:3577", method="near")
+comp_gi_albers <- project(comp_gi_with_gens, "EPSG:3577", method="near")
 
-comp_ei_albers <- project(comp_ei, aus_albers, method="near")
-comp_gi_albers <- project(comp_gi_with_gens, aus_albers, method="near")
-
-nat_ei_albers <- project(nat_ei, aus_albers, method="near")
-nat_gi_albers <- project(nat_gi, aus_albers, method="near")
+nat_ei_albers <- project(nat_ei, "EPSG:3577", method="near")
+nat_gi_albers <- project(nat_gi, "EPSG:3577", method="near")
 
 aus_boundary <- ne_countries(country = "Australia",  scale = "medium", returnclass = "sf")
 aus_boundary <- vect(aus_boundary)
-aus_boundary_albers <- project(aus_boundary, aus_albers)
+aus_boundary_albers <- project(aus_boundary, "EPSG:3577")
 
 aus_states <- ozmap_states
 aus_states <- vect(aus_states)
-aus_states_albers <- project(aus_states, aus_albers)
+aus_states_albers <- project(aus_states, "EPSG:3577")
 
 aus_ei <- crop(comp_ei_albers, aus_boundary_albers) # reduces extent to the bounding box of Australia
 aus_ei <- mask(aus_ei, aus_boundary_albers)         # NA values outside Australia polygon
@@ -242,7 +239,7 @@ aus_ei_nat <- mask(aus_ei_nat, aus_boundary_albers)
 aus_gi_nat <- crop(nat_gi_albers, aus_boundary_albers)
 aus_gi_nat <- mask(aus_gi_nat, aus_boundary_albers)
 
-hosts_albers <- project(hosts, aus_albers, method="near")
+hosts_albers <- project(hosts, "EPSG:3577", method="near")
 hosts_bin <- !is.na(hosts_albers)
 hosts_bin <- mask(hosts_bin, aus_boundary_albers)
 hosts_bin[hosts_bin == 0] <- NA
@@ -252,7 +249,7 @@ cross.host <- as.polygons(hosts_bin, dissolve = FALSE)
 ### Map Australian EI and GI results and host availability, for A) the composite irrigation map and B) the natural rainfall scenario
 
 ```{r ausmaps}
-png("D.suzukii_aus.png", units="in", width=10, height=5, res=700)
+png("../dsoutputs/D.suzukii_aus.png", units="in", width=10, height=5, res=700)
 layout(matrix(c(1, 2, 3, 3), nrow = 2, byrow = TRUE), heights = c(0.80, 0.20)) # 2 plots on top, 1 legend area below
 
 par(mar = c(0, 2, 2, 1)) #plot composite map with hosts
@@ -290,7 +287,7 @@ legend("right", inset = c(0.15, 0),
        fill = adjustcolor("grey20"), border=NA, title = "Host Presence", bty = "n", cex=0.8, xpd=TRUE)
 invisible(dev.off())
 
-knitr::include_graphics("D.suzukii_aus.png")
+knitr::include_graphics("../dsoutputs/D.suzukii_aus.png")
 ```
 
 ### Set North American and European projections
@@ -334,7 +331,7 @@ no_generations_euro <- mask(crop(no_generations_euro, euro_boundary_ETRS89), eur
 ### Plot North America and Europe maps with a shared legend
 
 ```{r nameuro}
-png("D.suzukii_nameuro.png", units="in", width=10, height=5, res=700)
+png("../dsoutputs/D.suzukii_nameuro.png", units="in", width=10, height=5, res=700)
 layout(matrix(c(1, 2, 3, 3), nrow = 2, byrow = TRUE), heights = c(0.80, 0.20)) # 2 plots on top, 1 legend area below
 
 par(mar = c(0, 2, 2, 1)) # North America
@@ -377,7 +374,7 @@ legend("right", inset = c(0.15, 0),
        bty = "n", cex = 0.8, horiz = FALSE)
 invisible(dev.off())
 
-knitr::include_graphics("D.suzukii_nameuro.png")
+knitr::include_graphics("../dsoutputs/D.suzukii_nameuro.png")
 ```
 
 ### References
