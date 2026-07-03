@@ -1,0 +1,3 @@
+"0",""
+"0","irr_ei_clipped <- mask(irr_ei, girreo, maskvalues=0)"
+"0","irr_gi_clipped <- mask(irr_gi, girreo, maskvalues=0)"

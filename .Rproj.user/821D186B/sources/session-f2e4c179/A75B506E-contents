@@ -1,0 +1,277 @@
+---
+title: "ABARES land use data separation to identify commodiy host distributions"
+date: "2026-07-03"
+output:
+  html_document:
+    theme: cerulean
+    highlight: tango
+bibliography: references.bib
+csl: harvard-cite-them-right.csl
+---
+
+```{css, echo=FALSE}
+.csl-entry { margin-bottom: 1.5em; }
+```
+
+### Rmd purposes
+
+**Aim and context:** This file is used to subset the ABARES NLUM dataset into relevant agricultural commodities and to plot their extent across Australia.
+
+**Analysis:**
+- Subset ABARES categories to agricultural cells at native 250m^2^ resolution
+- Aggregate raster to 10 arc-min (\~324 km^2^) cells
+- Apply a 10% floor
+
+<!--
+NOTE (review, 2026-07-03): the plan above describes a MEAN aggregation to get a
+0-1 proportion of agricultural land per output cell, followed by a 10% floor.
+The code actually implements a MODAL aggregation (dominant land-use class per
+cell), and no floor is applied anywhere. These are genuinely different outputs:
+
+  - modal  -> "what is the single most common category in this cell?"
+  - mean of a presence/absence layer -> "what fraction of this cell is
+    covered by host habitat?", which a floor can then filter on
+
+Modal aggregation with na.rm = TRUE also means a cell can be assigned a host
+category even if only a tiny handful of the ~5,000 underlying 250 m pixels in
+that cell belong to it (since NA pixels are excluded before the mode is
+taken) - so sparse, scattered occurrences can end up rendered as fully solid
+~18 km cells. If a density/coverage map is what's intended, consider building
+a per-category binary presence raster, aggregating that with fun = "mean" to
+get proportion cover, and thresholding at 0.1 - rather than aggregating the
+categorical raster directly. Left the modal approach in place below since
+this is a design decision, not a bug, but flagging it clearly since it's a
+mismatch with the stated method.
+-->
+
+**Outputs:** Density-graded map of the Australian agricultural plant zone, and shapefiles of agricultural production
+
+<!--
+NOTE: only a GeoTIFF raster is written out below - no polygon/shapefile
+export currently happens. Add an as.polygons() + writeVector() step if a
+vector output is actually needed, or update this description.
+-->
+
+**Palette:** hcl.colors(7, palette = "Purple-Yellow") \# "#80146E" "#7A55AB" "#478EC1" "#34B8C0" "#7ED5B8" "#C6E8BC" "#F5F2D8"
+
+<!--
+NOTE: this hcl.colors palette isn't actually used anywhere in the code below -
+the plot instead uses a hand-picked `base_cols` vector. Worth reconciling the
+two (either use the hcl palette, or update this note to describe base_cols).
+-->
+
+### Libraries setup
+
+```{r}
+library(terra)
+library(tidyverse)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ozmaps)
+library(sf)
+# RColorBrewer removed: was loaded but never used (base_cols is hand-coded
+# below rather than drawn from a Brewer/hcl palette). Re-add if you switch
+# back to a generated palette.
+
+# Australia country outline, for the national border line on the final plot
+aus_boundary <- ne_countries(country = "Australia", scale = "medium", returnclass = "sf")
+
+# State/territory boundaries, for internal border lines on the final plot
+data("ozmap_states")
+```
+
+### Data files
+
+- Download and read in the most recent 2020-21 ABARES NLUM dataset from <https://www.agriculture.gov.au/abares/aclump/land-use/land-use-of-australia-2010-11-to-2020-21#downloads>
+
+```{r data}
+# Attribute table: maps integer raster codes to land-use category labels
+abares_csv <- read.csv("../data/NLUM_v7_250_INPUTS_2020_21_geo.csv")
+
+# Native-resolution (250 m) categorical land-use raster for Australia
+abares_tif <- rast("../data/NLUM_v7_250_INPUTS_2020_21_geo.tif")
+```
+
+### Define and apply Australian Albers Equal Area projection
+```{r}
+# Albers Equal Area is used for the final plot/output so that cell/area
+# comparisons across the continent aren't distorted by a geographic CRS
+aus_albers <- "+proj=aea +lat_0=0 +lon_0=132 +lat_1=-18 +lat_2=-36 +x_0=0 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"
+
+aus_boundary <- vect(aus_boundary)
+aus_boundary_albers <- project(aus_boundary, aus_albers)
+
+aus_states <- ozmap_states
+aus_states <- vect(aus_states)
+aus_states_albers <- project(aus_states, aus_albers)
+```
+
+### Subset ABARES categories to relevant land use types
+- Merge irrigated and non-irrigated categories
+- Identify categories to retain
+```{r setcategories}
+# Collapse the four irrigated horticulture codes into their non-irrigated
+# equivalents, since the analysis doesn't need to distinguish irrigation
+# status - only whether the land use is a relevant commodity host category.
+#
+# CHECK: this list covers tree fruits / citrus / grapes / shrub berries only.
+# Confirm against the ABARES 2020-21 data dictionary whether an irrigated
+# equivalent exists for "3.4.0 Perennial horticulture" itself, or for the
+# 5.1.x intensive horticulture codes - if so and it's not merged here, those
+# pixels will silently be excluded from categories_to_keep below.
+abares_csv_merged <- abares_csv %>%
+  mutate(TERTV8_merged = case_when(
+    TERTV8 == "4.4.1 Irrigated tree fruits" ~ "3.4.1 Tree fruits",
+    TERTV8 == "4.4.8 Irrigated citrus" ~ "3.4.8 Citrus",
+    TERTV8 == "4.4.9 Irrigated grapes" ~ "3.4.9 Grapes",
+    TERTV8 == "4.4.5 Irrigated shrub berries and fruits" ~ "3.4.5 Shrub berries and fruits",
+    TRUE ~ TERTV8 ))
+
+# Apply the merged attribute table to the raster and make it the active
+# category, so raster values now resolve to TERTV8_merged labels
+levels(abares_tif) <- abares_csv_merged
+activeCat(abares_tif) <- "TERTV8_merged"
+
+# The commodity-host land-use classes we want to keep for the final map
+categories_to_keep <- c("3.4.0 Perennial horticulture",
+                        "3.4.1 Tree fruits",
+                        "3.4.5 Shrub berries and fruits",
+                        "3.4.8 Citrus",
+                        "3.4.9 Grapes",
+                        "5.1.0 Intensive horticulture",
+                        "5.1.2 Shadehouses",
+                        "5.1.3 Glasshouses")
+```
+
+
+```{r}
+# Look up the integer raster codes ("Value") corresponding to the
+# categories_to_keep labels, via the merged attribute table
+level_table <- levels(abares_tif)[[1]]
+values_to_keep <- level_table$Value[level_table$TERTV8_merged %in% categories_to_keep]
+
+# Keep only pixels in categories_to_keep; everything else becomes NA.
+#
+# STREAMLINING NOTE: this mask+classify combo can be done in one step, e.g.:
+#   abares_filtered <- classify(abares_tif, cbind(values_to_keep, values_to_keep), others = NA)
+# which maps kept values to themselves and everything else to NA directly,
+# without needing the intermediate 1/NA mask_raster. Left as two steps here
+# since that's how it was written, but worth simplifying.
+mask_raster <- classify(abares_tif, cbind(values_to_keep, 1), others = NA)
+abares_filtered <- mask(abares_tif, mask_raster)
+
+# mask() can drop the categorical attribute table, so it's reapplied here
+levels(abares_filtered) <- abares_csv_merged
+activeCat(abares_filtered) <- "TERTV8_merged"
+
+# --- Define 10 arc-minute target raster in WGS84 ---
+# This is the destination grid we'll eventually snap the aggregated data to,
+# cropped to roughly the Australian mainland + Tasmania bounding box
+target_res <- rast()
+res(target_res) <- 10/60
+ext(target_res) <- ext(113, 154, -44, -10)
+
+# --- Project to WGS84 first ---
+# method = "near" (nearest neighbour) is required for categorical data -
+# any interpolating method would invent nonsense intermediate category codes
+abares_wgs84 <- project(abares_filtered, "EPSG:4326", method = "near")
+
+# --- Aggregate to ~10 arc-min using modal, then snap to target grid ---
+# Work out how many native pixels need to be combined into one 10 arc-min
+# cell (native resolution here is close to, but not exactly, a clean
+# divisor of 10 arc-min, hence the round() and the later resample-to-grid
+# step to fix up any residual misalignment)
+agg_factor <- round((10/60) / res(abares_wgs84)[1])
+
+# Aggregate: 
+# See NOTE at the top of this document re: modal vs. mean/proportion + floor.
+abares_agg <- aggregate(abares_wgs84, fact = agg_factor, fun = "modal", na.rm = TRUE)
+
+# Resample (nearest neighbour, so category codes are preserved) onto the
+# exact target_res grid defined above, correcting any small offset left
+# over from the aggregation step
+abares_modal <- resample(abares_agg, target_res, method = "near")
+
+# Re-attach the category labels (aggregate/resample can drop them)
+levels(abares_modal) <- abares_csv_merged
+activeCat(abares_modal) <- "TERTV8_merged"
+
+# Reproject the aggregated categorical raster to Albers for area-correct
+# continental plotting
+abares_modal_albers <- project(abares_modal, aus_albers, method = "near")
+levels(abares_modal_albers) <- abares_csv_merged # restore full category table
+activeCat(abares_modal_albers) <- "TERTV8_merged"
+
+# --- Build the colour table for plotting ---
+lu_table <- levels(abares_modal_albers)[[1]]
+
+# Default everything to grey (covers any category not in categories_to_keep,
+# which shouldn't appear post-filtering, but keeps the table complete/safe)
+cols <- rep("#d9d9d9", nrow(lu_table))
+
+base_cols <- c(
+  "3.4.0 Perennial horticulture" = "#f27e05",
+  "3.4.1 Tree fruits" = "#6bbc44",
+  "3.4.5 Shrub berries and fruits" = "#d10065",
+  "3.4.8 Citrus" = "#ffd932",
+  "3.4.9 Grapes" = "#8838c3",
+  "5.1.0 Intensive horticulture" = "#445426",
+  "5.1.2 Shadehouses" = "#0057c2",
+  "5.1.3 Glasshouses" = "#00aeef" )
+names(base_cols) <- categories_to_keep
+
+idx <- match(lu_table$TERTV8_merged, categories_to_keep)
+cols[!is.na(idx)] <- base_cols[idx[!is.na(idx)]]
+
+coltab(abares_modal_albers) <- data.frame(
+  value = lu_table$Value,
+  col = cols)
+```
+
+```{r}
+# NOTE: legend_order was computed but never referenced below - removed as
+# dead code. The legend instead indexes category_labels directly using
+# categories_to_keep, which already fixes the display order.
+
+category_labels <- c(
+  "3.4.0 Perennial horticulture" = "Perennial horticulture",
+  "3.4.1 Tree fruits" = "Tree fruits",
+  "3.4.5 Shrub berries and fruits" = "Shrub berries and fruits",
+  "3.4.8 Citrus" = "Citrus",
+  "3.4.9 Grapes" = "Grapes",
+  "5.1.0 Intensive horticulture" = "Intensive horticulture",
+  "5.1.2 Shadehouses" = "Shadehouses",
+  "5.1.3 Glasshouses" = "Glasshouses")
+
+# Write the final map to file
+tiff("D.suzukii_hosts_aus.tiff", units="in", width=8, height=4, res=500)
+par(oma=c(0, 0, 0, 1))
+par(mar=c(0, 0, 0, 1))
+
+plot(abares_modal_albers, axes = FALSE, plg = FALSE, legend = FALSE,
+     main = expression('Australian host distribution for '*italic(Drosophila~suzukii)*''))
+
+lines(aus_boundary_albers, col = "black", lwd = 1)
+lines(aus_states_albers,   col = "black", lwd = 1)
+
+par(xpd = NA)
+legend("right", inset = c(-0.05, 0),
+       legend = category_labels[categories_to_keep],
+       fill = base_cols[categories_to_keep],
+       bty = "n", cex = 0.9)
+invisible(dev.off())
+```
+
+```{r}
+# Export the aggregated categorical raster as a GeoTIFF.
+#
+# NOTE: this writes abares_modal (WGS84, no colour table attached) rather
+# than abares_modal_albers (the projected version with the colour table used
+# for the plot above). If downstream users need the same projection/colours
+# as the figure, consider writing abares_modal_albers instead or as well,
+# and/or sending output to a shared directory (e.g. "../outputs/") rather
+# than the working directory for consistency with how inputs are read from
+# "../data/".
+writeRaster(abares_modal, filename = "abares_modal_hosts.tif",
+  filetype = "GTiff", overwrite = TRUE)
+```

@@ -1,0 +1,2 @@
+"0","girreo <- rast(""Assimila_IrrigatedAreas_candidate_EVI_idx_Global_2023_irrigation_mask_0.1666667Deg.tif"")"
+"0","plot(girreo) # Visual check"
