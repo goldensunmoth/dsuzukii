@@ -47,7 +47,11 @@ world_boundary <- vect(world_boundary)                               # convert t
 data("ozmap_states")                                                 # Australia State and Territory boundaries
 
 records <- vect("../dsdata/d.suzukii.shp")                                     # read in GBIF records
-nrow(records) 
+coords <- crds(records) # Identify duplicate coordinates
+dup <- duplicated(coords)
+sum(dup)  # how many exact duplicates found
+records <- terra::subset(records, !dup) # Keep only unique coordinate records
+nrow(records)
 
 hosts <- rast("../dsdata/abares_modal_hosts.tif")                              # host data
 ```
@@ -144,10 +148,7 @@ ng_pts <- records[is.na(ei_vals) & is.na(gi_vals) & !is.na(ng_vals), ]
 nrow(ei_pts)
 nrow(gi_pts)
 nrow(ng_pts)
-
-total <- nrow(ei_pts) + nrow(gi_pts) + nrow(ng_pts)
-total
-
+sum( nrow(ei_pts) + nrow(gi_pts)+ nrow(ng_pts))
 ```
 
 ### Project to Robinson
@@ -167,6 +168,7 @@ ng_pts_robin <- project(ng_pts, robinson)
 world_boundary_robin <- project(world_boundary, robinson)
 ```
 
+### Classify point type for plotting and tabulation
 ```{r}
 ei_pts_robin$type <- "Record on EI"
 gi_pts_robin$type <- "Record on GI"
@@ -174,7 +176,6 @@ ng_pts_robin$type <- "Record on GI <1 gen"
 plotted <- rbind(ei_pts_robin, gi_pts_robin, ng_pts_robin)
 counts_tab <- table(plotted$continent, plotted$type)
 counts_tab
-sum(counts_tab)
 
 prop_tab <- prop.table(counts_tab, margin = 1) * 100
 round(prop_tab, 2)
