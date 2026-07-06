@@ -31,7 +31,7 @@ csl: harvard-cite-them-right.csl
 - Import global boundary file for mapping
 - Import *D. suzukii* shapefile
 
-```{r setup, message = FALSE}
+```{r setup}
 library(rnaturalearth)     # global boundaries
 library(rnaturalearthdata) # global boundaries
 library(sp)                # GIS manipulation
@@ -47,6 +47,8 @@ world_boundary <- vect(world_boundary)                               # convert t
 data("ozmap_states")                                                 # Australia State and Territory boundaries
 
 records <- vect("../dsdata/d.suzukii.shp")                                     # read in GBIF records
+nrow(records) 
+
 hosts <- rast("../dsdata/abares_modal_hosts.tif")                              # host data
 ```
 
@@ -56,7 +58,7 @@ hosts <- rast("../dsdata/abares_modal_hosts.tif")                              #
 - Set raster resolution, global limits, and CRS (WGS84, i.e. no projection)
 - Convert vector data to raster data for plotting
   - The Generations data will cover a wider range under an irrigated scenario where Dry Stress is reduced, so the natural data on Generations is moot
-
+- Identify uncategorised records outside of the CLIMEX mapping extent. Note and plot their coordinates for transparency. 
 ```{r rasterise}
 irrigated_points <- vect(irrigated, geom=c("Longitude", "Latitude")) # vectorise CSV as an interim step
 natural_points <- vect(natural, geom=c("Longitude", "Latitude"))     # vectorise CSV as an interim step
@@ -67,6 +69,11 @@ irr_gi <- rasterize(irrigated_points, r_global, field="GI") # rasterise irrigate
 nat_ei <- rasterize(natural_points, r_global, field="EI")   # rasterise natural vector data to specified resolution for EI
 nat_gi <- rasterize(natural_points, r_global, field="GI")   # rasterise natural vector data to specified resolution for GI
 generations <- rasterize(irrigated_points, r_global, field="Generations") # rasterise irrigated vector data to specified resolution for Generations
+
+uncategorised <- records[is.na(ei_vals) & is.na(gi_vals) & is.na(ng_vals), ]
+crds(uncategorised)
+plot(uncategorised, col = "red", pch = 19)
+plot(world_boundary, add = T)
 ```
 
 ### Import GirrEO tif, clip to EI and GI
@@ -121,11 +128,10 @@ no_generations[generations >= 1] <- NA
 - Classify whether records fall within EI\>0, GI\>0 and generations \>1, GI\>0 and generations \<1, or none of the above
 
 ```{r gbifrecs}
-plot_if_nonempty <- function(pts, use_points=FALSE, ...) {
-  if (length(pts) > 0) {
-    if (use_points) {coords <- as.data.frame(geom(pts)[, c("x", "y")])
-      points(coords, ...) } else {
-      plot(pts, ...)}  }}
+world_boundary_buffered <- terra::buffer(world_boundary, width = 5000)  # 5 km, adjust as needed
+region_info <- terra::extract(world_boundary_buffered, records) # region_info has an 'ID' column linking back to record row number
+region_info_unique <- region_info[!duplicated(region_info$id), ] # keep first match per record (in case of overlapping buffers)
+records$continent <- region_info_unique$continent
 
 ei_vals <- terra::extract(comp_ei, records)[,2]
 gi_vals <- terra::extract(comp_gi_with_gens, records)[,2]
@@ -134,6 +140,14 @@ ng_vals <- terra::extract(no_generations, records)[,2]
 ei_pts <- records[!is.na(ei_vals), ]
 gi_pts <- records[is.na(ei_vals) & !is.na(gi_vals), ]
 ng_pts <- records[is.na(ei_vals) & is.na(gi_vals) & !is.na(ng_vals), ]
+
+nrow(ei_pts)
+nrow(gi_pts)
+nrow(ng_pts)
+
+total <- nrow(ei_pts) + nrow(gi_pts) + nrow(ng_pts)
+total
+
 ```
 
 ### Project to Robinson
@@ -144,16 +158,52 @@ ng_pts <- records[is.na(ei_vals) & is.na(gi_vals) & !is.na(ng_vals), ]
 
 ```{r robinson, message = FALSE, warning = FALSE}
 robinson <- "+proj=robin"
-
 comp_ei_robin <- project(comp_ei, robinson, method="near")
 comp_gi_robin <- project(comp_gi_with_gens, robinson, method="near")
 no_generations_robin <- project(no_generations, robinson, method="near")
 ei_pts_robin <- project(ei_pts, robinson)
 gi_pts_robin <- project(gi_pts, robinson)
 ng_pts_robin <- project(ng_pts, robinson)
-
 world_boundary_robin <- project(world_boundary, robinson)
 ```
+
+```{r}
+ei_pts_robin$type <- "Record on EI"
+gi_pts_robin$type <- "Record on GI"
+ng_pts_robin$type <- "Record on GI <1 gen"
+plotted <- rbind(ei_pts_robin, gi_pts_robin, ng_pts_robin)
+counts_tab <- table(plotted$continent, plotted$type)
+counts_tab
+sum(counts_tab)
+
+prop_tab <- prop.table(counts_tab, margin = 1) * 100
+round(prop_tab, 2)
+```
+
+
+```{r recordsmap}
+type_col <- c("Record on EI" = "olivedrab", "Record on GI" = "steelblue1", "Record on GI <1 gen" = "#ad4387" )
+
+png("../dsoutputs/recs_global.png", units="in", width=8, height=4, res=600)
+par(mar = c(1, 1, 1, 1)) # plot 1
+plot(world_boundary_robin, border = "black", lwd = 0.4,
+     main = expression('Global records of '*italic(Drosophila~suzukii)),
+     legend = FALSE, axes = FALSE, cex.main = 0.8)
+plot(ei_pts_robin, col="olivedrab", cex=0.2, pch=20, legend=FALSE, add=TRUE)
+plot(gi_pts_robin, col="steelblue1", cex=0.2, pch=20, legend=FALSE, add=TRUE)
+plot(ng_pts_robin, col="#ad4387", cex=0.2, pch=20, legend=FALSE, add=TRUE)
+
+legend("bottom", inset = c(0, -0.13), xpd = NA,
+       legend = c(paste0("Record on EI (n=", nrow(ei_pts), ")"),
+                  paste0("Record on GI (n=", nrow(gi_pts), ")"),
+                  paste0("Record on GI <1 gen (n=", nrow(ng_pts), ")")),
+       pch = 20, pt.cex = 1, bty = "n", cex = 0.5, horiz = FALSE,
+       col = c("olivedrab", "steelblue1", "#ad4387"),
+       title = "Record type")
+knitr::include_graphics("../dsoutputs/recs_global.png")
+```
+
+
 
 ### Overlay global composite EI, GI, and GBIF occurrence records
 
@@ -164,7 +214,7 @@ The high record density in Eurasia and North America reduces visual detail when 
 - Turn off EI, GI, Generations and records as needed using \#
 
 ```{r globalmaps}
-png("../dsoutputs/D.suzukii_global.png", units="in", width=4, height=5, res=500)
+png("../dsoutputs/D.suzukii_global.png", units="in", width=4, height=5, res=600)
 layout(matrix(c(1, 2, 3), nrow = 3, byrow = TRUE), heights = c(0.43, 0.43, 0.14)) 
 
 par(mar = c(0, 1, 1, 1)) # plot 1
