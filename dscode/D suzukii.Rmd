@@ -15,7 +15,7 @@ csl: harvard-cite-them-right.csl
 
 ### Rmd purposes
 
-**Aim and context:** This Rmd file was used to map the global distribution via GBIF occurrence records of *Drosophila suzukii* against the CLIMEX model outputs of permanently and ephemerally suitable climates. The CLIMEX results for the Ecoclimatic Index (EI), Growth Index (GI, where generations \>1), and ephemeral suitability (GI\>0, generations \<1) are mapped as a composite of maximum values from the global area under irrigation (run under a 2.5mL daily top-up irrigation scenario and identified using GirrEO earth observation data), and the natural rainfall CLIMEX results. See @yonow2017 for an explanation of the logic involved in composite CLIMEX maps. For Australia, the composite CLIMEX results are overlain with the extent of commercial host growing regions as defined by ABARES.
+**Aim and context:** This Rmd file is used to map the global distribution via GBIF occurrence records of *Drosophila suzukii* against the CLIMEX model outputs of permanently and ephemerally suitable climates. The CLIMEX results for the Ecoclimatic Index (EI), Growth Index (GI, where generations \>1), and ephemeral suitability (GI\>0, generations \<1) are mapped as a composite of maximum values from the global area under irrigation (run under a 2.5mL daily top-up irrigation scenario and identified using GirrEO earth observation data), and the natural rainfall CLIMEX results. See @yonow2017 for an explanation of the logic involved in composite CLIMEX maps. For Australia, the composite CLIMEX results are overlain with the extent of commercial host growing regions as defined by ABARES.
 
 **Output:** This file was used to map composite CLIMEX results and GBIF records for a global map, North America and Europe, and Australia.
 
@@ -29,7 +29,10 @@ csl: harvard-cite-them-right.csl
   - Select Latitude, Longitude, EI, GI, and Generations, then save format and save as CSV within the R project folder.
   - Repeat for the irrigated dataset by changing Irrigation to 2.5 ml/day top-up for both summer and winter scenarios.
 - Import global boundary file for mapping
-- Import *D. suzukii* shapefile
+- Import the GirrEO tif downloaded from @lopezsaldana2025
+- Import Australian hosts data
+- Import *Drosophila suzukii* shapefile and remove any duplicate records
+- Identify how many records are removed and how many remain
 
 ```{r setup}
 library(rnaturalearth)     # global boundaries
@@ -38,6 +41,10 @@ library(sp)                # GIS manipulation
 library(terra)             # GIS manipulation
 library(ozmaps)            # Australian boundaries
 library(sf)                # GIS manipulation
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(scales)
 
 irrigated <- read.csv("../dsdata/D_suzukii_world_10_EI_GI_gens_irrigated.csv", skip = 2)
 natural <- read.csv("../dsdata/D_suzukii_world_10_EI_GI_gens_none.csv", skip =2)
@@ -46,14 +53,16 @@ world_boundary <- ne_countries(scale = "medium", returnclass = "sf") # import gl
 world_boundary <- vect(world_boundary)                               # convert to terra format
 data("ozmap_states")                                                 # Australia State and Territory boundaries
 
-records <- vect("../dsdata/d.suzukii.shp")                                     # read in GBIF records
-coords <- crds(records) # Identify duplicate coordinates
-dup <- duplicated(coords)
-sum(dup)  # how many exact duplicates found
-records <- terra::subset(records, !dup) # Keep only unique coordinate records
-nrow(records)
+girreo <- rast("../dsdata/Assimila_IrrigatedAreas_candidate_EVI_idx_Global_2023_irrigation_mask_0.1666667Deg.tif") # irrigation data
 
-hosts <- rast("../dsdata/abares_modal_hosts.tif")                              # host data
+hosts <- rast("../dsdata/abares_hosts_by_commodity.tif")             # host data
+hostcsv <- read.csv("../dsdata/abares_hosts_by_commodity_lookup.csv")
+
+records <- vect("../dsdata/d.suzukii.shp")                           # read in GBIF records
+sum(duplicated(crds(records)))                                       # n(exact duplicates)
+sum(dup)                                                             # n(exact duplicates)
+records <- terra::subset(records, !dup)                              # deduplicate
+nrow(records)                                                        # n(records)
 ```
 
 ### Rasterise irrigated and non-irrigated outputs
@@ -61,8 +70,7 @@ hosts <- rast("../dsdata/abares_modal_hosts.tif")                              #
 - Convert CSV data to vector format as an interim, as the CLIMEX data are natively in vector format
 - Set raster resolution, global limits, and CRS (WGS84, i.e. no projection)
 - Convert vector data to raster data for plotting
-  - The Generations data will cover a wider range under an irrigated scenario where Dry Stress is reduced, so the natural data on Generations is moot
-- Identify uncategorised records outside of the CLIMEX mapping extent. Note and plot their coordinates for transparency. 
+  - Generations data will cover a wider range under an irrigated scenario where Dry Stress is reduced, so the natural data on Generations is moot
 ```{r rasterise}
 irrigated_points <- vect(irrigated, geom=c("Longitude", "Latitude")) # vectorise CSV as an interim step
 natural_points <- vect(natural, geom=c("Longitude", "Latitude"))     # vectorise CSV as an interim step
@@ -73,25 +81,18 @@ irr_gi <- rasterize(irrigated_points, r_global, field="GI") # rasterise irrigate
 nat_ei <- rasterize(natural_points, r_global, field="EI")   # rasterise natural vector data to specified resolution for EI
 nat_gi <- rasterize(natural_points, r_global, field="GI")   # rasterise natural vector data to specified resolution for GI
 generations <- rasterize(irrigated_points, r_global, field="Generations") # rasterise irrigated vector data to specified resolution for Generations
-
-uncategorised <- records[is.na(ei_vals) & is.na(gi_vals) & is.na(ng_vals), ]
-crds(uncategorised)
-plot(uncategorised, col = "red", pch = 19)
-plot(world_boundary, add = T)
 ```
 
 ### Import GirrEO tif, clip to EI and GI
 
-- Import the GirrEO tif downloaded from @lopezsaldana2025
 - Resample GirrEO extent to r_global
 - Clip irrigated EI and GI to GirrEO dataset
 - Clean zeros to NA in all rasters
 
 ```{r girreo}
-girreo <- rast("../dsdata/Assimila_IrrigatedAreas_candidate_EVI_idx_Global_2023_irrigation_mask_0.1666667Deg.tif")
 girreo <- resample(girreo, r_global,  method="near")
-irr_ei_clipped <- mask(irr_ei, girreo, maskvalues=0)
-irr_gi_clipped <- mask(irr_gi, girreo, maskvalues=0)
+irr_ei_clipped <- mask(irr_ei, girreo, maskvalues = 0)
+irr_gi_clipped <- mask(irr_gi, girreo, maskvalues = 0)
 
 nat_ei[nat_ei == 0] <- NA 
 nat_gi[nat_gi == 0] <- NA
@@ -105,7 +106,8 @@ generations[generations == 0]     <- NA
 - Overlay clipped irrigated EI onto EI w/natural rainfall.
 - Set colours and breaks.
 - Repeat for GI.
-- Set values where generations \<1 but GI \>0.
+- Set values where generations \<1 but GI \>0
+- Calculate irrigation summary statistics for EI 
 
 ```{r composites}
 comp_ei <- max(nat_ei, irr_ei_clipped, na.rm=TRUE)
@@ -118,45 +120,66 @@ comp_gi[comp_gi == 0] <- NA
 gi_breaks <- c(1, 20, 40, 60, 80, 100)
 gi_cols <- c("#CDEBDD", "#9CD6BB", "#6AC299", "#43A276", "#2F7152")
 
-comp_gi_with_gens <- comp_gi             # EI = 0 + generations >= 1
+comp_gi_with_gens <- comp_gi            # EI = 0 + generations >= 1
 comp_gi_with_gens[!is.na(comp_ei)] <- NA
 comp_gi_with_gens[generations < 1] <- NA
 
-no_generations <- comp_gi                # EI = 0 + generations < 1
+no_generations <- comp_gi               # EI = 0 + generations < 1
 no_generations[!is.na(comp_ei)] <- NA
 no_generations[generations >= 1] <- NA
 ```
 
+### Irrigation statistics for the world
+
+- Substitutes NA → 0 in both rasters
+- Calculate n(cells where irrigated comp0 > 0 and nat0 == 0, i.e. cells irrigation alone made suitable) / n(cells where comp0 > 0) 
+- Calculate global area of EI increase under irrigation, restricted to cells already suitable under natural rainfall (i.e. beyond-range suitability changes)
+- Calculate per-cell EI value increase where the cell was already irrigated (i.e. within-range suitability changes)
+
+```{r}
+nat0  <- terra::subst(nat_ei, NA, 0)                  # create "safe" versions for boolean comparison
+comp0 <- terra::subst(comp_ei, NA, 0)                 # pre-masked comp_ei
+pct_extension <- global((comp0 > 0) & (nat0 == 0), "sum", na.rm = TRUE)[1,1] / global(comp0 > 0, "sum", na.rm = TRUE)[1,1] * 100
+pct_extension                                         # print
+
+abs_increase <- comp_ei - nat_ei                      # identify cell values under irrigation
+vals_abs <- terra::values(abs_increase, na.rm = TRUE) # exclude cells where nat_ei values == 0 
+summary(vals_abs)                                     # print
+```
+
 ### Classify GBIF occurrence records by suitability zone
 
+- Classify points by continent
 - Classify whether records fall within EI\>0, GI\>0 and generations \>1, GI\>0 and generations \<1, or none of the above
+- Identify the number of: records on EI cells, records on GI cells, records on no-generations cells, and uncategorised records outside of the CLIMEX mapping extent
 
 ```{r gbifrecs}
-world_boundary_buffered <- terra::buffer(world_boundary, width = 5000)  # 5 km, adjust as needed
-region_info <- terra::extract(world_boundary_buffered, records) # region_info has an 'ID' column linking back to record row number
-region_info_unique <- region_info[!duplicated(region_info$id), ] # keep first match per record (in case of overlapping buffers)
-records$continent <- region_info_unique$continent
+world_boundary_buffered <- terra::buffer(world_boundary, width = 5000)   # 5 km buffer
+region_info_unique <- region_info_unique[order(region_info_unique$id), ] # first match per record, in case of overlapping boundary buffers
+records$continent <- region_info_unique$continent                      
 
 ei_vals <- terra::extract(comp_ei, records)[,2]
 gi_vals <- terra::extract(comp_gi_with_gens, records)[,2]
 ng_vals <- terra::extract(no_generations, records)[,2]
 
+uncategorised <- records[is.na(ei_vals) & is.na(gi_vals) & is.na(ng_vals), ]
 ei_pts <- records[!is.na(ei_vals), ]
 gi_pts <- records[is.na(ei_vals) & !is.na(gi_vals), ]
 ng_pts <- records[is.na(ei_vals) & is.na(gi_vals) & !is.na(ng_vals), ]
 
+nrow(uncategorised)
 nrow(ei_pts)
 nrow(gi_pts)
 nrow(ng_pts)
-sum( nrow(ei_pts) + nrow(gi_pts)+ nrow(ng_pts))
 ```
 
-### Project to Robinson
+### Project to Robinson and classify point type for plotting and tabulation
 
 - Define Robinson projection
 - Extend composite maps
 - Project EI, GI, Generations, records, and world boundary
-
+- Set type labels
+- Calculate raw numbers and proportions
 ```{r robinson, message = FALSE, warning = FALSE}
 robinson <- "+proj=robin"
 comp_ei_robin <- project(comp_ei, robinson, method="near")
@@ -166,96 +189,120 @@ ei_pts_robin <- project(ei_pts, robinson)
 gi_pts_robin <- project(gi_pts, robinson)
 ng_pts_robin <- project(ng_pts, robinson)
 world_boundary_robin <- project(world_boundary, robinson)
-```
 
-### Classify point type for plotting and tabulation
-```{r}
 ei_pts_robin$type <- "Record on EI"
 gi_pts_robin$type <- "Record on GI"
 ng_pts_robin$type <- "Record on GI <1 gen"
 plotted <- rbind(ei_pts_robin, gi_pts_robin, ng_pts_robin)
 counts_tab <- table(plotted$continent, plotted$type)
 counts_tab
-
 prop_tab <- prop.table(counts_tab, margin = 1) * 100
 round(prop_tab, 2)
 ```
 
+### Set North American and European projections
 
-```{r recordsmap}
-type_col <- c("Record on EI" = "olivedrab", "Record on GI" = "steelblue1", "Record on GI <1 gen" = "#ad4387" )
+- Disaggregate rasters to ensure fine-scale raster projections, especially important in the Alps
+- Project rasters under fine-scale to North America and Europe local projections
+- Project region boundaries to North America and Europe local projections
+- Project records to North America and Europe local projections
+- Mask rasters to region boundaries post-projection
+```{r reprojections, message = FALSE, warning = FALSE}
+comp_ei_fine <- disagg(comp_ei, fact = 4, method = "near")
+comp_gi_fine <- disagg(comp_gi_with_gens, fact = 4, method = "near")
+no_generations_fine <- disagg(no_generations, fact = 4, method = "near")
 
-png("../dsoutputs/recs_global.png", units="in", width=8, height=4, res=600)
-par(mar = c(1, 1, 1, 1)) # plot 1
-plot(world_boundary_robin, border = "black", lwd = 0.4,
-     main = expression('Global records of '*italic(Drosophila~suzukii)),
-     legend = FALSE, axes = FALSE, cex.main = 0.8)
-plot(ei_pts_robin, col="olivedrab", cex=0.2, pch=20, legend=FALSE, add=TRUE)
-plot(gi_pts_robin, col="steelblue1", cex=0.2, pch=20, legend=FALSE, add=TRUE)
-plot(ng_pts_robin, col="#ad4387", cex=0.2, pch=20, legend=FALSE, add=TRUE)
+comp_ei_nad <- project(comp_ei_fine, "ESRI:102008", method="near") # North America
+comp_gi_nad <- project(comp_gi_fine, "ESRI:102008", method="near")
+no_generations_nad <- project(no_generations_fine, "ESRI:102008", method="near")
 
-legend("bottom", inset = c(0, -0.13), xpd = NA,
-       legend = c(paste0("Record on EI (n=", nrow(ei_pts), ")"),
-                  paste0("Record on GI (n=", nrow(gi_pts), ")"),
-                  paste0("Record on GI <1 gen (n=", nrow(ng_pts), ")")),
-       pch = 20, pt.cex = 1, bty = "n", cex = 0.5, horiz = FALSE,
-       col = c("olivedrab", "steelblue1", "#ad4387"),
-       title = "Record type")
-knitr::include_graphics("../dsoutputs/recs_global.png")
+nam_boundary <- ne_countries(continent = "North America", scale = "medium", returnclass = "sf")
+nam_boundary <- vect(nam_boundary)
+nam_boundary_nad <- project(nam_boundary, "ESRI:102008")
+ei_pts_nad <- project(ei_pts, "ESRI:102008")
+gi_pts_nad <- project(gi_pts, "ESRI:102008")
+ng_pts_nad <- project(ng_pts, "ESRI:102008")
+
+nad_ei <- mask(crop(comp_ei_nad, nam_boundary_nad), nam_boundary_nad)
+nad_gi <- mask(crop(comp_gi_nad, nam_boundary_nad), nam_boundary_nad)
+no_generations_nad <- mask(crop(no_generations_nad, nam_boundary_nad), nam_boundary_nad)
+
+comp_ei_euro <- project(comp_ei_fine, "EPSG:3035", method="near") # Europe
+comp_gi_euro <- project(comp_gi_fine, "EPSG:3035", method="near")
+no_generations_euro <- project(no_generations_fine, "EPSG:3035", method="near")
+
+euro_boundary <- ne_countries(continent = "Europe", scale = "medium", returnclass = "sf")
+euro_boundary <- vect(euro_boundary)
+euro_boundary_ETRS89 <- project(euro_boundary, "EPSG:3035")
+ei_pts_euro <- project(ei_pts, "EPSG:3035")
+gi_pts_euro <- project(gi_pts, "EPSG:3035")
+ng_pts_euro <- project(ng_pts, "EPSG:3035")
+
+euro_ei <- mask(crop(comp_ei_euro, euro_boundary_ETRS89), euro_boundary_ETRS89)
+euro_gi <- mask(crop(comp_gi_euro, euro_boundary_ETRS89), euro_boundary_ETRS89)
+no_generations_euro <- mask(crop(no_generations_euro, euro_boundary_ETRS89), euro_boundary_ETRS89)
 ```
 
+### Map global record distribution and CLIMEX results, with insets of North America and Europe
+```{r}
+png("../dsoutputs/D.suzukii_combined.png", units="in", width=8, height=9, res=750)
+layout(matrix(c(1, 1,
+                 2, 2,
+                 3, 4), nrow = 3, byrow = TRUE),
+       heights = c(0.45, 0.12, 0.43))
 
-
-### Overlay global composite EI, GI, and GBIF occurrence records
-
-The high record density in Eurasia and North America reduces visual detail when GBIF records are included, but these dta are critical to the mapping process. As such, the global data are mapped with and without the GBIF records.
-
-- Turn export line and dev.off() on for exports and off for in-R visuals
-- Can export in other formats too, SVG is good to maintain picture clarity (needs package svglite).
-- Turn off EI, GI, Generations and records as needed using \#
-
-```{r globalmaps}
-png("../dsoutputs/D.suzukii_global.png", units="in", width=4, height=5, res=600)
-layout(matrix(c(1, 2, 3), nrow = 3, byrow = TRUE), heights = c(0.43, 0.43, 0.14)) 
-
-par(mar = c(0, 1, 1, 1)) # plot 1
+par(mar = c(0, 1, 2, 1)) # global map
 plot(comp_gi_robin, col=gi_cols, breaks=gi_breaks, maxcell=Inf,
      main=expression('A. Global composite climate suitability for '*italic(Drosophila~suzukii)*' with GBIF records'),
-     legend=FALSE, axes=FALSE, cex.main = 0.8)
+     legend=FALSE, axes=FALSE, cex.main = 0.9)
 plot(no_generations_robin, col=c("lightpink"), add=TRUE, legend=FALSE, maxcell=Inf)
 plot(comp_ei_robin, col=ei_cols, breaks=ei_breaks, add=TRUE, legend=FALSE, maxcell=Inf)
 plot(world_boundary_robin, add = TRUE, border = "black", lwd = 0.4)
-plot_if_nonempty(ei_pts_robin, col="darkblue", cex=0.6, pch=16, legend=FALSE, add=TRUE)
-plot_if_nonempty(gi_pts_robin, col="darkblue", cex=0.6, pch=4, legend=FALSE, add=TRUE)
-plot_if_nonempty(ng_pts_robin, col="darkblue", cex=0.6, pch=2, legend=FALSE, add=TRUE)
+plot(ei_pts_robin, col="darkblue", cex=0.35, pch=16, legend=FALSE, add=TRUE)
+plot(gi_pts_robin, col="chocolate4", cex=0.35, pch=16, legend=FALSE, add=TRUE)
+plot(ng_pts_robin, col="darkorchid1", cex=0.35, pch=16, legend=FALSE, add=TRUE)
 
-par(mar = c(0, 1, 1, 1)) # plot 2
-plot(comp_gi_robin, col=gi_cols, breaks=gi_breaks, 
-     main=expression('B. Global composite climate suitability for '*italic(Drosophila~suzukii)*''),
-     legend=FALSE, axes=FALSE, cex.main = 0.8)
-plot(no_generations_robin, col=c("lightpink"), add=TRUE, legend=FALSE)
-plot(comp_ei_robin, col=ei_cols, breaks=ei_breaks, add=TRUE, legend=FALSE)
-plot(world_boundary_robin, add = TRUE, border = "black", lwd = 0.4)
-
-par(mar = c(1, 1, 0, 1))
-plot(1, type = "n", axes = FALSE, xlab = "", ylab = "") # shared legend
-
-legend("left", inset = c(0.15, 0),
+par(mar = c(0, 0, 0, 0)) # shared legend across middle
+plot(1, type = "n", axes = FALSE, xlab = "", ylab = "", ylim = c(0, 1))
+legend("left", inset = c(0.2, 0),
        legend = paste(ei_breaks[-length(ei_breaks)], ei_breaks[-1], sep = " – "),
-       fill = ei_cols, title = "Ecoclimatic Index", bty = "n", cex = 0.6, horiz = FALSE)
+       fill = ei_cols, title = "Ecoclimatic Index", bty = "n", cex = 0.8, horiz = FALSE)
 legend("center", 
        legend = paste(gi_breaks[-length(gi_breaks)], gi_breaks[-1], sep = " – "),
-       fill = gi_cols, title = "Growth Index", bty = "n", cex = 0.6, horiz = FALSE)
-legend("right", inset = c(0.1, 0),
+       fill = gi_cols, title = "Growth Index", bty = "n", cex = 0.8, horiz = FALSE)
+legend("right", inset = c(0.15, 0),
        legend = c("Record on EI", "Record on GI only", "Record on GI <1 gen", "GI >0 and Generations <1"),
-       pch = c(16, 4, 2, 15),
-       col = c("darkblue", "darkblue", "darkblue", "lightpink"),
-       pt.cex = c(0.8, 0.8, 0.8, 1.5),
-       bty = "n", cex = 0.6, horiz = FALSE)
-invisible(dev.off())
+       pch = c(16, 16, 16, 15),
+       col = c("darkblue", "chocolate4", "darkorchid1", "lightpink"),
+       pt.cex = c(0.6, 0.6, 0.6, 1.5),
+       bty = "n", cex = 0.8, horiz = FALSE)
 
-knitr::include_graphics("../dsoutputs/D.suzukii_global.png")
+par(mar = c(0, 2, 2, 1)) # North America
+plot(nad_gi, col = gi_cols, breaks = gi_breaks,
+     main = expression('B. North American composite climate suitability for '*italic(Drosophila~suzukii)),
+     legend = FALSE, axes = FALSE, cex.main = 0.8)
+plot(no_generations_nad, col = c("lightpink"), add = TRUE, legend = FALSE)
+plot(nad_ei, col = ei_cols, breaks = ei_breaks, add = TRUE, legend = FALSE)
+plot(ei_pts_nad, col="darkblue", cex=0.4, pch=16, legend=FALSE, add=TRUE)
+plot(gi_pts_nad, col="chocolate4", cex=0.4, pch=16, legend=FALSE, add=TRUE)
+plot(nam_boundary_nad, add = TRUE, border = "black", lwd = 0.4)
+
+par(mar = c(0, 1, 2, 2)) # Europe
+plot(euro_gi, col = gi_cols, breaks = gi_breaks,
+     main = expression('C. European composite climate suitability for '*italic(Drosophila~suzukii)),
+     xlim = c(2500000, 6500000), ylim = c(1300000, 5500000),
+     legend = FALSE, axes = FALSE, cex.main = 0.8)
+plot(no_generations_euro, col = c("lightpink"), add = TRUE, legend = FALSE)
+plot(euro_ei, col = ei_cols, breaks = ei_breaks, add = TRUE, legend = FALSE)
+plot(ei_pts_euro, col="darkblue", cex=0.4, pch=16, legend=FALSE, add=TRUE)
+plot(gi_pts_euro, col="chocolate4", cex=0.4, pch=16, legend=FALSE, add=TRUE)
+plot(ng_pts_euro, col="darkorchid1", cex=0.4, pch=16, legend=FALSE, add=TRUE)
+plot(euro_boundary_ETRS89, add = TRUE, border = "black", lwd = 0.4)
+
+invisible(dev.off())
+knitr::include_graphics("../dsoutputs/D.suzukii_combined.png")
 ```
+
 
 ### Set Australian Albers reprojection
 
@@ -284,28 +331,44 @@ aus_ei <- crop(comp_ei_albers, aus_boundary_albers) # reduces extent to the boun
 aus_ei <- mask(aus_ei, aus_boundary_albers)         # NA values outside Australia polygon
 aus_gi <- crop(comp_gi_albers, aus_boundary_albers)
 aus_gi <- mask(aus_gi, aus_boundary_albers)
-
 aus_ei_nat <- crop(nat_ei_albers, aus_boundary_albers) # rasters without irrigation
 aus_ei_nat <- mask(aus_ei_nat, aus_boundary_albers)
 aus_gi_nat <- crop(nat_gi_albers, aus_boundary_albers)
 aus_gi_nat <- mask(aus_gi_nat, aus_boundary_albers)
 
 hosts_albers <- project(hosts, "EPSG:3577", method="near")
+hosts_ei_aligned <- resample(hosts_albers, aus_ei, method = "near")
 hosts_bin <- !is.na(hosts_albers)
 hosts_bin <- mask(hosts_bin, aus_boundary_albers)
 hosts_bin[hosts_bin == 0] <- NA
 cross.host <- as.polygons(hosts_bin, dissolve = FALSE)
 ```
 
+### Australian irrigation statistics
+
+- Calculate the proportional range extension within Australia (to demonstrate EI range expansion)
+- Calculate per-cell EI increase, restricted to cells already suitable under natural rainfall
+```{r}
+aus_nat0  <- terra::subst(aus_ei_nat, NA, 0)
+aus_comp0 <- terra::subst(aus_ei, NA, 0)
+aus_pct_extension <- global((aus_comp0 > 0) & (aus_nat0 == 0), "sum", na.rm = TRUE)[1,1] /
+                     global(aus_comp0 > 0, "sum", na.rm = TRUE)[1,1] * 100
+aus_pct_extension
+
+aus_abs_increase <- aus_ei - aus_ei_nat
+aus_vals_abs <- terra::values(aus_abs_increase, na.rm = TRUE)
+summary(aus_vals_abs)
+```
+
+
 ### Map Australian EI and GI results and host availability, for A) the composite irrigation map and B) the natural rainfall scenario
-
 ```{r ausmaps}
-png("../dsoutputs/D.suzukii_aus.png", units="in", width=10, height=5, res=700)
-layout(matrix(c(1, 2, 3, 3), nrow = 2, byrow = TRUE), heights = c(0.80, 0.20)) # 2 plots on top, 1 legend area below
+png("../dsoutputs/D.suzukii_aus.png", units="in", width=4, height=4, res=700)
+layout(matrix(c(1, 2), nrow = 2, byrow = TRUE), heights = c(0.8, 0.2)) # 2 plots on top, 1 legend area below
 
-par(mar = c(0, 2, 2, 1)) #plot composite map with hosts
+par(mar = c(0, 0, 0, 0)) #plot composite map with hosts
 plot(aus_gi, col=gi_cols, breaks=gi_breaks,
-     main=expression('A. Australian composite climate suitability for '*italic(Drosophila~suzukii)*''),
+     main=expression('Australian composite climate suitability for '*italic(Drosophila~suzukii)*''),
      legend=FALSE, axes=FALSE, cex.main = 0.8,
      xlim=c(-2500000, 2500000), ylim=c(-5000000, -1000000))
 plot(aus_ei, col=ei_cols, breaks=ei_breaks, add=TRUE, legend=FALSE)
@@ -313,7 +376,28 @@ plot(cross.host, density = 60, angle = 45, add=TRUE, border = NA, col = adjustco
 lines(aus_boundary_albers, col="black", lwd=1)  # Use aus_boundary_albers here!
 lines(aus_states_albers, col="black", lwd=1)
 
-par(mar = c(0, 1, 2, 2)) # plot natural rainfall with hosts
+par(mar = c(0, 1, 0, 1))
+plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
+
+legend("left", inset = c(0, 0),
+       legend = paste(ei_breaks[-length(ei_breaks)], ei_breaks[-1], sep = " – "),
+       fill = ei_cols, title = "Ecoclimatic Index", bty = "n", cex = 0.6, horiz = FALSE)
+legend("center", 
+       legend = paste(gi_breaks[-length(gi_breaks)], gi_breaks[-1], sep = " – "),
+       fill = gi_cols, title = "Growth Index", bty = "n", cex = 0.6, horiz = FALSE)
+legend("right", inset = c(0, 0),
+       legend = c("Commercial Hosts"),
+       density = 60, angle = 45,
+       fill = adjustcolor("grey20"), border=NA, title = "Host Presence", bty = "n", cex=0.6, xpd=TRUE)
+invisible(dev.off())
+knitr::include_graphics("../dsoutputs/D.suzukii_aus.png")
+```
+
+```{r}
+png("../dsoutputs/D.suzukii_aus_sm.png", units="in", width=4, height=4, res=700)
+layout(matrix(c(1, 2), nrow = 2, byrow = TRUE), heights = c(0.8, 0.2)) # 2 plots on top, 1 legend area below
+
+par(mar = c(0, 0, 0, 0)) #plot composite map with hosts
 plot(aus_gi_nat, col=gi_cols, breaks=gi_breaks, 
      main=expression('B. Australian climate suitability for '*italic(Drosophila~suzukii)*' under natural rainfall'),
      legend=FALSE, axes=FALSE, cex.main = 0.8,
@@ -323,109 +407,80 @@ plot(cross.host, density = 60, angle = 45, add=TRUE, border = NA, col = adjustco
 lines(aus_boundary_albers, col="black", lwd=1)  # Use aus_boundary_albers here!
 lines(aus_states_albers, col="black", lwd=1)
 
-par(mar = c(1, 1, 0, 1))
+par(mar = c(0, 1, 0, 1))
 plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
 
-legend("left", inset = c(0.2, 0),
+legend("left", inset = c(0, 0),
        legend = paste(ei_breaks[-length(ei_breaks)], ei_breaks[-1], sep = " – "),
-       fill = ei_cols, title = "Ecoclimatic Index", bty = "n", cex = 0.8, horiz = FALSE)
+       fill = ei_cols, title = "Ecoclimatic Index", bty = "n", cex = 0.6, horiz = FALSE)
 legend("center", 
        legend = paste(gi_breaks[-length(gi_breaks)], gi_breaks[-1], sep = " – "),
-       fill = gi_cols, title = "Growth Index", bty = "n", cex = 0.8, horiz = FALSE)
-legend("right", inset = c(0.15, 0),
+       fill = gi_cols, title = "Growth Index", bty = "n", cex = 0.6, horiz = FALSE)
+legend("right", inset = c(0, 0),
        legend = c("Commercial Hosts"),
        density = 60, angle = 45,
-       fill = adjustcolor("grey20"), border=NA, title = "Host Presence", bty = "n", cex=0.8, xpd=TRUE)
+       fill = adjustcolor("grey20"), border=NA, title = "Host Presence", bty = "n", cex=0.6, xpd=TRUE)
 invisible(dev.off())
-
-knitr::include_graphics("../dsoutputs/D.suzukii_aus.png")
+knitr::include_graphics("../dsoutputs/D.suzukii_aus_sm.png")
 ```
 
-### Set North American and European projections
 
-```{r reprojections, message = FALSE, warning = FALSE}
-nad83_albers <- "+proj=aea +lat_0=40 +lon_0=-96 +lat_1=20 +lat_2=60 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs" # N. America Albers
-comp_ei_nad <- project(comp_ei, nad83_albers, method="near")                 # reproject EI
-comp_gi_nad <- project(comp_gi_with_gens, nad83_albers, method="near")       # reproject GI
-no_generations_nad <- project(no_generations, nad83_albers, method="near")   # reproject no generations
+### Host categorisation risk
+- Cate
+```{r}
+png("../dsoutputs/hosteis.png", units="in", width=8, height=8, res=700)
+ei_vals_all <- values(aus_ei, na.rm = TRUE) # All EI values across Australia, regardless of host presence
+ei_df_all   <- data.frame(EI = as.vector(ei_vals_all))
 
-nam_boundary <- ne_countries(continent = "North America", scale = "medium", returnclass = "sf") # North America boundaries
-nam_boundary <- vect(nam_boundary)
-nam_boundary_nad <- project(nam_boundary, nad83_albers)
+ei_host_mask   <- mask(aus_ei, hosts_ei_aligned) # EI values restricted to cells where any host commodity is present
+ei_vals_hosts  <- values(ei_host_mask, na.rm = TRUE)
+ei_df_hosts    <- data.frame(EI = as.vector(ei_vals_hosts))
 
-ei_pts_nad <- project(ei_pts, nad83_albers)
-gi_pts_nad <- project(gi_pts, nad83_albers)
-ng_pts_nad <- project(ng_pts, nad83_albers)
+p1 <- ggplot() +
+  geom_histogram(data = ei_df_all, aes(x = EI, y = after_stat(density), fill = "EI values"),
+                 bins = 30, colour = "white", key_glyph = "rect") +
+  geom_density(data = ei_df_hosts, aes(x = EI, colour = "Host density"),
+               linewidth = 1, key_glyph = "path") +
+  scale_fill_manual(name = "", values = c("EI values" = "tan")) +
+  scale_colour_manual(name = "", values = c("Host density" = "black")) +
+  guides( fill = guide_legend(title = "", order = 1, override.aes = list(colour = NA)),
+    colour = guide_legend(title = "", order = 1) ) +
+  labs(title = "EI across Australia, with host density by EI values",
+       x = "Ecoclimatic Index (EI)", y = "Density") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
 
-nad_ei <- mask(crop(comp_ei_nad, nam_boundary_nad), nam_boundary_nad)
-nad_gi <- mask(crop(comp_gi_nad, nam_boundary_nad), nam_boundary_nad)
-no_generations_nad <- mask(crop(no_generations_nad, nam_boundary_nad), nam_boundary_nad)
+ei_vals   <- values(aus_ei, na.rm = FALSE) # Pull EI and host code with NA-preserving alignment so vectors match cell-for-cell
+host_vals <- values(hosts_ei_aligned, na.rm = FALSE)
+combo <- data.frame(EI = as.vector(ei_vals), host_code = as.vector(host_vals)) %>%
+  filter(!is.na(EI), !is.na(host_code))
+combo <- combo %>% left_join(hostcsv, by = c("host_code" = "Value")) # join against lookup table for readable commodity labels
 
-euro_ETRS89 <- "+proj=laea +lat_0=52 +lon_0=10 +x_0=4321000 +y_0=3210000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs" #Europe LAEA
-comp_ei_euro <- project(comp_ei, euro_ETRS89, method="near")                # reproject EI
-comp_gi_euro <- project(comp_gi_with_gens, euro_ETRS89, method="near")      # reproject GI
-no_generations_euro <- project(no_generations, euro_ETRS89, method="near")  # reproject no generations
+host_colours <- c(
+  "Perennial horticulture"   = "#d76a4c",
+  "Tree fruits"              = "#c9d763",
+  "Shrub berries and fruits" = "#6e1e3a",
+  "Citrus"                   = "#ffd932",
+  "Grapes"                   = "#e9b0c8",
+  "Intensive horticulture"   = "#25533f",
+  "Shadehouses"              = "#274f8b",
+  "Glasshouses"              = "#a4bde0")
 
-euro_boundary <- ne_countries(continent = "Europe", scale = "medium", returnclass = "sf") # Europe boundaries
-euro_boundary <- vect(euro_boundary)
-euro_boundary_ETRS89 <- project(euro_boundary, euro_ETRS89)
+p2 <- ggplot(combo, aes(x = EI, fill = host_type)) +
+  geom_histogram(bins = 30, colour = "white") +
+  scale_fill_manual(values = host_colours) +
+  scale_y_continuous(breaks = scales::breaks_pretty(n = 4)) +
+  facet_wrap(~ host_type, scales = "free_y") +
+  labs(title = "EI distribution by host commodity type",
+       x = "Ecoclimatic Index (EI)", y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        panel.grid.minor = element_blank())
 
-ei_pts_euro <- project(ei_pts, euro_ETRS89)
-gi_pts_euro <- project(gi_pts, euro_ETRS89)
-ng_pts_euro <- project(ng_pts, euro_ETRS89)
-
-euro_ei <- mask(crop(comp_ei_euro, euro_boundary_ETRS89), euro_boundary_ETRS89)
-euro_gi <- mask(crop(comp_gi_euro, euro_boundary_ETRS89), euro_boundary_ETRS89)
-no_generations_euro <- mask(crop(no_generations_euro, euro_boundary_ETRS89), euro_boundary_ETRS89)
-```
-
-### Plot North America and Europe maps with a shared legend
-
-```{r nameuro}
-png("../dsoutputs/D.suzukii_nameuro.png", units="in", width=10, height=5, res=700)
-layout(matrix(c(1, 2, 3, 3), nrow = 2, byrow = TRUE), heights = c(0.80, 0.20)) # 2 plots on top, 1 legend area below
-
-par(mar = c(0, 2, 2, 1)) # North America
-plot(nad_gi, col = gi_cols, breaks = gi_breaks, 
-     main = expression('A. North American composite climate suitability for '*italic(Drosophila~suzukii)),
-     legend = FALSE, axes = FALSE, cex.main = 0.8)
-plot(no_generations_nad, col = c("lightpink"), add = TRUE, legend = FALSE)
-plot(nad_ei, col = ei_cols, breaks = ei_breaks, add = TRUE, legend = FALSE)
-plot_if_nonempty(ei_pts_nad, col="darkblue", cex=0.6, pch=16, legend=FALSE, add=TRUE)
-plot_if_nonempty(gi_pts_nad, col="darkblue", cex=0.6, pch=4, legend=FALSE, add=TRUE)
-plot_if_nonempty(ng_pts_nad, col="darkblue", cex=0.6, pch=2, legend=FALSE, add=TRUE)
-plot(nam_boundary_nad, add = TRUE, border = "black", lwd = 0.4)
-
-par(mar = c(0, 1, 2, 2)) # Europe
-plot(euro_gi, col = gi_cols, breaks = gi_breaks, 
-     main = expression('B. European composite climate suitability for '*italic(Drosophila~suzukii)),
-     xlim = c(2500000, 6500000), ylim = c(1300000, 5500000),
-     legend = FALSE, axes = FALSE, cex.main = 0.8)
-plot(no_generations_euro, col = c("lightpink"), add = TRUE, legend = FALSE)
-plot(euro_ei, col = ei_cols, breaks = ei_breaks, add = TRUE, legend = FALSE)
-plot_if_nonempty(ei_pts_euro, col="darkblue", cex=0.6, pch=16, legend=FALSE, add=TRUE)
-plot_if_nonempty(gi_pts_euro, col="darkblue", cex=0.6, pch=4, legend=FALSE, add=TRUE)
-plot_if_nonempty(ng_pts_euro, col="darkblue", cex=0.6, pch=2, legend=FALSE, add=TRUE)
-plot(euro_boundary_ETRS89, add = TRUE, border = "black", lwd = 0.4)
-
-par(mar = c(1, 1, 0, 1))
-plot(1, type = "n", axes = FALSE, xlab = "", ylab = "") # shared legend at the bottom
-
-legend("left", inset = c(0.2, 0),
-       legend = paste(ei_breaks[-length(ei_breaks)], ei_breaks[-1], sep = " – "),
-       fill = ei_cols, title = "Ecoclimatic Index", bty = "n", cex = 0.8, horiz = FALSE)
-legend("center", 
-       legend = paste(gi_breaks[-length(gi_breaks)], gi_breaks[-1], sep = " – "),
-       fill = gi_cols, title = "Growth Index", bty = "n", cex = 0.8, horiz = FALSE)
-legend("right", inset = c(0.15, 0),
-       legend = c("Record on EI", "Record on GI only", "Record on GI <1 gen", "GI >0 and Generations <1"),
-       pch = c(16, 4, 2, 15),
-       col = c("darkblue", "darkblue", "darkblue", "lightpink"),
-       pt.cex = c(0.8, 0.8, 0.8, 1.5),
-       bty = "n", cex = 0.8, horiz = FALSE)
+p1 / p2 # combine as a multi panel figure
 invisible(dev.off())
-
-knitr::include_graphics("../dsoutputs/D.suzukii_nameuro.png")
+knitr::include_graphics("../dsoutputs/hosteis.png")
 ```
+
 
 ### References

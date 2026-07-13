@@ -166,5 +166,15 @@ knitr::include_graphics("../dsoutputs/D.suzukii_hosts_aus.png")
 ### Export raster of all land use types
 - No separation of host commodities within the raster
 ```{r raster}
-writeRaster(abares_modal, filename = "../dsdata/abares_modal_hosts.tif", filetype = "GTiff", overwrite = TRUE)
+lu_table$host_type <- NA_character_
+lu_table$host_type[!is.na(idx)] <- category_labels[categories_to_keep][idx[!is.na(idx)]]
+
+abares_hosts <- abares_modal
+levels(abares_hosts) <- data.frame(value = lu_table$Value, host_type = lu_table$host_type)
+
+writeRaster(abares_hosts, filename = "../dsdata/abares_hosts_by_commodity.tif",
+            filetype = "GTiff", overwrite = TRUE)
+
+write.csv(lu_table[!is.na(lu_table$host_type), c("Value", "host_type")],
+          "../dsdata/abares_hosts_by_commodity_lookup.csv", row.names = FALSE)
 ```
