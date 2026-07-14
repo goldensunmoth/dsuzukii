@@ -33,12 +33,13 @@ csl: harvard-cite-them-right.csl
 - Import Australian hosts data
 - Import *Drosophila suzukii* shapefile and remove any duplicate records
 - Identify how many records are removed and how many remain
-
+- Set up Robinson projection
 ```{r setup}
 library(rnaturalearth)     # global boundaries
 library(rnaturalearthdata) # global boundaries
 library(sp)                # GIS manipulation
 library(terra)             # GIS manipulation
+library(tidyterra) 
 library(ozmaps)            # Australian boundaries
 library(sf)                # GIS manipulation
 library(dplyr)
@@ -63,6 +64,8 @@ sum(duplicated(crds(records)))                                       # n(exact d
 sum(dup)                                                             # n(exact duplicates)
 records <- terra::subset(records, !dup)                              # deduplicate
 nrow(records)                                                        # n(records)
+
+robinson <- "+proj=robin"
 ```
 
 ### Rasterise irrigated and non-irrigated outputs
@@ -83,12 +86,11 @@ nat_gi <- rasterize(natural_points, r_global, field="GI")   # rasterise natural 
 generations <- rasterize(irrigated_points, r_global, field="Generations") # rasterise irrigated vector data to specified resolution for Generations
 ```
 
-### Import GirrEO tif, clip to EI and GI
+### Import GirrEO tif, map outputs for Supplementary Materials then clip to EI and GI
 
 - Resample GirrEO extent to r_global
 - Clip irrigated EI and GI to GirrEO dataset
 - Clean zeros to NA in all rasters
-
 ```{r girreo}
 girreo <- resample(girreo, r_global,  method="near")
 irr_ei_clipped <- mask(irr_ei, girreo, maskvalues = 0)
@@ -99,6 +101,10 @@ nat_gi[nat_gi == 0] <- NA
 irr_ei_clipped[irr_ei_clipped == 0] <- NA
 irr_gi_clipped[irr_gi_clipped == 0] <- NA
 generations[generations == 0]     <- NA
+
+world_boundary_robin <- project(world_boundary, robinson)
+girreo_robin         <- project(girreo, robinson, method = "near")
+girreo_robin_map     <- girreo_robin * 100
 ```
 
 ### Build composite EI, GI, and mutually exclusive display layers
@@ -136,7 +142,7 @@ no_generations[generations >= 1] <- NA
 - Calculate global area of EI increase under irrigation, restricted to cells already suitable under natural rainfall (i.e. beyond-range suitability changes)
 - Calculate per-cell EI value increase where the cell was already irrigated (i.e. within-range suitability changes)
 
-```{r}
+```{r irrigationstats}
 nat0  <- terra::subst(nat_ei, NA, 0)                  # create "safe" versions for boolean comparison
 comp0 <- terra::subst(comp_ei, NA, 0)                 # pre-masked comp_ei
 pct_extension <- global((comp0 > 0) & (nat0 == 0), "sum", na.rm = TRUE)[1,1] / global(comp0 > 0, "sum", na.rm = TRUE)[1,1] * 100
@@ -181,14 +187,12 @@ nrow(ng_pts)
 - Set type labels
 - Calculate raw numbers and proportions
 ```{r robinson, message = FALSE, warning = FALSE}
-robinson <- "+proj=robin"
 comp_ei_robin <- project(comp_ei, robinson, method="near")
 comp_gi_robin <- project(comp_gi_with_gens, robinson, method="near")
 no_generations_robin <- project(no_generations, robinson, method="near")
 ei_pts_robin <- project(ei_pts, robinson)
 gi_pts_robin <- project(gi_pts, robinson)
 ng_pts_robin <- project(ng_pts, robinson)
-world_boundary_robin <- project(world_boundary, robinson)
 
 ei_pts_robin$type <- "Record on EI"
 gi_pts_robin$type <- "Record on GI"
@@ -198,6 +202,7 @@ counts_tab <- table(plotted$continent, plotted$type)
 counts_tab
 prop_tab <- prop.table(counts_tab, margin = 1) * 100
 round(prop_tab, 2)
+nrow(plotted)
 ```
 
 ### Set North American and European projections
@@ -207,6 +212,7 @@ round(prop_tab, 2)
 - Project region boundaries to North America and Europe local projections
 - Project records to North America and Europe local projections
 - Mask rasters to region boundaries post-projection
+
 ```{r reprojections, message = FALSE, warning = FALSE}
 comp_ei_fine <- disagg(comp_ei, fact = 4, method = "near")
 comp_gi_fine <- disagg(comp_gi_with_gens, fact = 4, method = "near")
@@ -244,7 +250,8 @@ no_generations_euro <- mask(crop(no_generations_euro, euro_boundary_ETRS89), eur
 ```
 
 ### Map global record distribution and CLIMEX results, with insets of North America and Europe
-```{r}
+
+```{r figure2}
 png("../dsoutputs/D.suzukii_combined.png", units="in", width=8, height=9, res=750)
 layout(matrix(c(1, 1,
                  2, 2,
@@ -303,7 +310,6 @@ invisible(dev.off())
 knitr::include_graphics("../dsoutputs/D.suzukii_combined.png")
 ```
 
-
 ### Set Australian Albers reprojection
 
 - Reproject composite rasters to Australian Albers, and natural rasters to visually demonstrate the effects of irrigation
@@ -348,7 +354,7 @@ cross.host <- as.polygons(hosts_bin, dissolve = FALSE)
 
 - Calculate the proportional range extension within Australia (to demonstrate EI range expansion)
 - Calculate per-cell EI increase, restricted to cells already suitable under natural rainfall
-```{r}
+```{r ausirrigationstats}
 aus_nat0  <- terra::subst(aus_ei_nat, NA, 0)
 aus_comp0 <- terra::subst(aus_ei, NA, 0)
 aus_pct_extension <- global((aus_comp0 > 0) & (aus_nat0 == 0), "sum", na.rm = TRUE)[1,1] /
@@ -360,9 +366,8 @@ aus_vals_abs <- terra::values(aus_abs_increase, na.rm = TRUE)
 summary(aus_vals_abs)
 ```
 
-
-### Map Australian EI and GI results and host availability, for A) the composite irrigation map and B) the natural rainfall scenario
-```{r ausmaps}
+### Map Australian EI and GI results and host availability, for the composite irrigation map 
+```{r figure3}
 png("../dsoutputs/D.suzukii_aus.png", units="in", width=4, height=4, res=700)
 layout(matrix(c(1, 2), nrow = 2, byrow = TRUE), heights = c(0.8, 0.2)) # 2 plots on top, 1 legend area below
 
@@ -393,13 +398,120 @@ invisible(dev.off())
 knitr::include_graphics("../dsoutputs/D.suzukii_aus.png")
 ```
 
-```{r}
-png("../dsoutputs/D.suzukii_aus_sm.png", units="in", width=4, height=4, res=700)
+### Overlap of climate suitability and host availability
+- Define all Australian EI and GI cells and mask to hosts
+- Set histogram breaks
+- Histogram of all EI values across Australia plus host density
+- Histogram of all GI values across Australia plus host density
+- Histogram of host commodity EI values 
+```{r figure4}
+ei_vals_all <- values(aus_ei, na.rm = TRUE)
+ei_df_all   <- data.frame(EI = as.vector(ei_vals_all))
+gi_vals_all <- values(aus_gi, na.rm = TRUE)
+gi_df_all   <- data.frame(GI = as.vector(gi_vals_all))
+
+ei_host_mask  <- mask(aus_ei, hosts_ei_aligned)
+ei_vals_hosts <- values(ei_host_mask, na.rm = TRUE)
+ei_df_hosts   <- data.frame(EI = as.vector(ei_vals_hosts))
+
+gi_host_mask  <- mask(aus_gi, hosts_ei_aligned)  
+gi_vals_hosts <- values(gi_host_mask, na.rm = TRUE)
+gi_df_hosts   <- data.frame(GI = as.vector(gi_vals_hosts))
+
+png("../dsoutputs/hosteis.png", units = "in", width = 7, height = 11, res =700)
+ei_breaks <- seq(0, 100, by = 5)
+ei_axis_breaks <- seq(0, 100, by = 20)                     # labelling only
+
+p1 <- ggplot() +
+  geom_histogram(data = ei_df_all, aes(x = EI, y = after_stat(density), fill = "EI values"),
+                 breaks = ei_breaks, colour = "white", key_glyph = "rect") +
+  geom_density(data = ei_df_hosts, aes(x = EI, colour = "Host density"),
+               linewidth = 1, key_glyph = "path") +
+  scale_fill_manual(name = "", values = c("EI values" = "#FF8C00")) +
+  scale_colour_manual(name = "", values = c("Host density" = "black")) +
+  scale_x_continuous(breaks = ei_axis_breaks) +
+  guides(fill = guide_legend(title = "", order = 1, override.aes = list(colour = NA)),
+         colour = guide_legend(title = "", order = 2)) +
+  labs(title = "Australian proportion of year-round climate suitability (EI) and hosts",
+       x = "Ecoclimatic Index", y = "Density") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+gi_breaks <- seq(0, 100, by = 5)   
+p2 <- ggplot() +
+  geom_histogram(data = gi_df_all, aes(x = GI, y = after_stat(density), fill = "GI values"),
+                 breaks = gi_breaks, colour = "white", key_glyph = "rect") +
+  geom_density(data = gi_df_hosts, aes(x = GI, colour = "Host density"),
+               linewidth = 1, key_glyph = "path") +
+  scale_fill_manual(name = "", values = c("GI values" = "#6AC299")) +
+  scale_colour_manual(name = "", values = c("Host density" = "black")) +
+  scale_x_continuous(breaks = ei_axis_breaks) +
+  guides(fill = guide_legend(title = "", order = 1, override.aes = list(colour = NA)),
+         colour = guide_legend(title = "", order = 2)) +
+  labs(title = "Australian proportion of ephemeral climate suitability (GI) and hosts",
+       x = "Growth Index", y = "Density") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+ei_vals   <- values(aus_ei, na.rm = FALSE)
+host_vals <- values(hosts_ei_aligned, na.rm = FALSE)
+combo <- data.frame(EI = as.vector(ei_vals), host_code = as.vector(host_vals)) %>%
+  filter(!is.na(EI), !is.na(host_code)) %>%
+  left_join(hostcsv, by = c("host_code" = "Value"))
+
+host_colours <- c(
+  "Perennial horticulture"   = "#d76a4c",
+  "Tree fruits"              = "#c9d763",
+  "Shrub berries and fruits" = "#6e1e3a",
+  "Citrus"                   = "#ffd932",
+  "Grapes"                   = "#e9b0c8",
+  "Intensive horticulture"   = "#25533f",
+  "Shadehouses"              = "#274f8b",
+  "Glasshouses"              = "#a4bde0")
+
+p3 <- ggplot(combo, aes(x = EI, fill = host_type)) +
+  geom_histogram(breaks = ei_breaks, colour = "white") +   # bars every 10
+  scale_fill_manual(values = host_colours) +
+  scale_x_continuous(breaks = ei_axis_breaks) +            # labels every 20
+  scale_y_continuous(breaks = scales::breaks_pretty(n = 4)) +
+  facet_wrap(~ host_type, scales = "free_y") +
+  labs(title = "EI distribution by host commodity type",
+       x = "Ecoclimatic Index (EI)", y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        panel.grid.minor = element_blank())
+
+p1 / p2 / p3
+invisible(dev.off())
+
+knitr::include_graphics("../dsoutputs/hosteis.png")
+```
+
+GirrEO map (Supplementary Materials)
+```{r suppfig1}
+png("../dsoutputs/GirrEO.png", units="in", width=8, height=5, res=700)
+ggplot() +
+  geom_spatraster(data = girreo_robin_map, na.rm = TRUE) +
+  scale_fill_gradient(name = "Irrigated area per cell (%)", low = "#FFF", 
+                      high = "#478EC1", na.value = "transparent", breaks = c(0, 100)) +
+  geom_sf(data = world_boundary_robin, fill = NA, colour = "grey30", linewidth = 0.1) +
+  labs(title = "GirrEO map of global irrigation at 10 arc-minute resolution") +
+  theme_void() +
+  theme(plot.title = element_text(size =9, hjust = 0.5))
+
+invisible(dev.off())
+knitr::include_graphics("../dsoutputs/GirrEO.png")
+```
+
+Map Australian EI and GI results and host availability, for natural rainfall (Supplementary Materials)
+```{r suppfig2}
+png("../dsoutputs/D.suzukii_aus_sm.png", units="in", width=4, height=4.5, res=700)
 layout(matrix(c(1, 2), nrow = 2, byrow = TRUE), heights = c(0.8, 0.2)) # 2 plots on top, 1 legend area below
 
 par(mar = c(0, 0, 0, 0)) #plot composite map with hosts
 plot(aus_gi_nat, col=gi_cols, breaks=gi_breaks, 
-     main=expression('B. Australian climate suitability for '*italic(Drosophila~suzukii)*' under natural rainfall'),
+     main=expression(atop('Australian climate suitability for', 
+                           italic(Drosophila~suzukii)*' under natural rainfall')),
      legend=FALSE, axes=FALSE, cex.main = 0.8,
      xlim=c(-2500000, 2500000), ylim=c(-5000000, -1000000))
 plot(aus_ei_nat, col=ei_cols, breaks=ei_breaks, add=TRUE, legend=FALSE)
@@ -423,64 +535,5 @@ legend("right", inset = c(0, 0),
 invisible(dev.off())
 knitr::include_graphics("../dsoutputs/D.suzukii_aus_sm.png")
 ```
-
-
-### Host categorisation risk
-- Cate
-```{r}
-png("../dsoutputs/hosteis.png", units="in", width=8, height=8, res=700)
-ei_vals_all <- values(aus_ei, na.rm = TRUE) # All EI values across Australia, regardless of host presence
-ei_df_all   <- data.frame(EI = as.vector(ei_vals_all))
-
-ei_host_mask   <- mask(aus_ei, hosts_ei_aligned) # EI values restricted to cells where any host commodity is present
-ei_vals_hosts  <- values(ei_host_mask, na.rm = TRUE)
-ei_df_hosts    <- data.frame(EI = as.vector(ei_vals_hosts))
-
-p1 <- ggplot() +
-  geom_histogram(data = ei_df_all, aes(x = EI, y = after_stat(density), fill = "EI values"),
-                 bins = 30, colour = "white", key_glyph = "rect") +
-  geom_density(data = ei_df_hosts, aes(x = EI, colour = "Host density"),
-               linewidth = 1, key_glyph = "path") +
-  scale_fill_manual(name = "", values = c("EI values" = "tan")) +
-  scale_colour_manual(name = "", values = c("Host density" = "black")) +
-  guides( fill = guide_legend(title = "", order = 1, override.aes = list(colour = NA)),
-    colour = guide_legend(title = "", order = 1) ) +
-  labs(title = "EI across Australia, with host density by EI values",
-       x = "Ecoclimatic Index (EI)", y = "Density") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-ei_vals   <- values(aus_ei, na.rm = FALSE) # Pull EI and host code with NA-preserving alignment so vectors match cell-for-cell
-host_vals <- values(hosts_ei_aligned, na.rm = FALSE)
-combo <- data.frame(EI = as.vector(ei_vals), host_code = as.vector(host_vals)) %>%
-  filter(!is.na(EI), !is.na(host_code))
-combo <- combo %>% left_join(hostcsv, by = c("host_code" = "Value")) # join against lookup table for readable commodity labels
-
-host_colours <- c(
-  "Perennial horticulture"   = "#d76a4c",
-  "Tree fruits"              = "#c9d763",
-  "Shrub berries and fruits" = "#6e1e3a",
-  "Citrus"                   = "#ffd932",
-  "Grapes"                   = "#e9b0c8",
-  "Intensive horticulture"   = "#25533f",
-  "Shadehouses"              = "#274f8b",
-  "Glasshouses"              = "#a4bde0")
-
-p2 <- ggplot(combo, aes(x = EI, fill = host_type)) +
-  geom_histogram(bins = 30, colour = "white") +
-  scale_fill_manual(values = host_colours) +
-  scale_y_continuous(breaks = scales::breaks_pretty(n = 4)) +
-  facet_wrap(~ host_type, scales = "free_y") +
-  labs(title = "EI distribution by host commodity type",
-       x = "Ecoclimatic Index (EI)", y = "Count") +
-  theme_minimal() +
-  theme(legend.position = "none",
-        panel.grid.minor = element_blank())
-
-p1 / p2 # combine as a multi panel figure
-invisible(dev.off())
-knitr::include_graphics("../dsoutputs/hosteis.png")
-```
-
 
 ### References
